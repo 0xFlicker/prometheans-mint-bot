@@ -1,0 +1,12 @@
+# basic node ingores
+node_modules
+yarn-error.log
+
+# typechian
+src/contracts
+
+# build
+tsconfig.tsbuildinfo
+
+# local env files
+.env
