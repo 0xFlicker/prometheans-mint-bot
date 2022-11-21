@@ -2,8 +2,13 @@
 node_modules
 yarn-error.log
 
-# typechian
+# typechain
 src/contracts
+
+# hardhat
+cache
+artifacts
+deployments
 
 # build
 tsconfig.tsbuildinfo

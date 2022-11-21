@@ -2,20 +2,19 @@ import {
   BigNumber,
   providers,
   utils,
-  Signer,
   providers as ethersProviders,
   Wallet,
 } from "ethers";
 import {
-  OperatorFunction,
-  ObservableInput,
+  FlashbotsBundleProvider,
+  FlashbotsBundleResolution,
+} from "@flashbots/ethers-provider-bundle";
+import {
   Subject,
   concatMap,
   exhaustMap,
   groupBy,
   mergeMap,
-  first,
-  scan,
   share,
   filter,
   partition,
@@ -23,8 +22,12 @@ import {
   take,
   tap,
   zip,
+  of,
 } from "rxjs";
-import { Prometheans__factory } from "../contracts";
+import {
+  Prometheans__factory,
+  PrometheansSafeMint__factory,
+} from "../contracts";
 import { toFixedGwei } from "../utils";
 
 const ONE_HUNDRED_GWEI = utils.parseUnits("100", "gwei");
@@ -41,27 +44,33 @@ interface IMintState {
 }
 
 export async function mintOne({
+  flashbots,
   desiredEmber,
   privateKey,
   providers,
   contractAddress,
+  safeMintContractAddress,
   maxPriorityFeePerGas,
   maxBaseFeeAllowed,
   watchPending,
+  tip,
 }: {
+  flashbots: boolean;
   desiredEmber: number;
   privateKey: string;
   providers: providers.Provider[];
   contractAddress: string;
+  safeMintContractAddress: string;
   maxPriorityFeePerGas: BigNumber;
   maxBaseFeeAllowed: BigNumber;
   watchPending?: boolean;
+  tip?: BigNumber;
 }) {
   console.log(`Attempting to mint one with ${desiredEmber} ember`);
 
   const provider = new ethersProviders.FallbackProvider(providers);
   const signer = new Wallet(privateKey, provider);
-
+  const authSigner = Wallet.createRandom();
   // Connected to wallet, used to send transactions
   const prometheansMinter = Prometheans__factory.connect(
     contractAddress,
@@ -73,6 +82,17 @@ export async function mintOne({
     contractAddress,
     provider
   );
+
+  // Used for flashbot minting
+  const prometheansSafeMinter = PrometheansSafeMint__factory.connect(
+    safeMintContractAddress,
+    provider
+  );
+  const prometheusSafeMinterInterface =
+    PrometheansSafeMint__factory.createInterface();
+
+  // Make one estimate of a mint call, it shouldn't change much
+  const mintEstimate = await prometheansMinter.estimateGas.mint();
 
   // The tip of the observable chain. New blocks are pushed into this subject
   const blockNumber$ = new Subject<number>();
@@ -101,7 +121,7 @@ export async function mintOne({
       );
     }),
     filter(([_, currentEmber]) =>
-      currentEmber.eq(BigNumber.from(desiredEmber).add(1))
+      currentEmber.lte(BigNumber.from(desiredEmber).add(1))
     )
   );
 
@@ -116,10 +136,104 @@ export async function mintOne({
   //  - We will mint one
   //  - But only if we are not already currently minting
   const currentEmberAndGasPrice$ = currentEmberAndGasPriceWellPriced$.pipe(
-    exhaustMap(([_, __, feeData]) => {
+    exhaustMap(([blockNumber, __, feeData]) => {
       let { maxFeePerGas, lastBaseFeePerGas } = feeData;
       maxFeePerGas = maxFeePerGas || lastBaseFeePerGas || ONE_HUNDRED_GWEI;
       const totalMaxFeePerGas = maxFeePerGas.add(maxPriorityFeePerGas);
+
+      if (flashbots) {
+        return from(
+          FlashbotsBundleProvider.create(provider, authSigner).then(
+            async (flashbotProvider) => {
+              console.log(
+                `Sending transaction via flashbot with max fee: ${toFixedGwei(
+                  maxFeePerGas as BigNumber
+                )} gwei and max priority fee: ${toFixedGwei(
+                  maxPriorityFeePerGas
+                )} gwei`
+              );
+
+              const bundleEstimatedGas =
+                await prometheansSafeMinter.estimateGas.mintTo(
+                  BigNumber.from(desiredEmber),
+                  signerAddress,
+                  tip || BigNumber.from(0),
+                  {
+                    value: tip,
+                  }
+                );
+              const safeMintToTransaction =
+                prometheusSafeMinterInterface.encodeFunctionData(
+                  "mintTo" as const,
+                  [
+                    BigNumber.from(desiredEmber),
+                    signerAddress,
+                    tip || BigNumber.from(0),
+                  ]
+                );
+              const bundle = await flashbotProvider.signBundle([
+                {
+                  signer,
+                  transaction: {
+                    to: safeMintContractAddress,
+                    data: safeMintToTransaction,
+                    maxFeePerGas: totalMaxFeePerGas,
+                    maxPriorityFeePerGas,
+                    gasLimit: bundleEstimatedGas,
+                    chainId: 1,
+                    type: 2,
+                    value: tip,
+                    nonce: await signer.getTransactionCount(),
+                  },
+                },
+              ]);
+              console.log("Simulating bundle");
+              const simulation = await flashbotProvider.simulate(
+                bundle,
+                blockNumber + 1
+              );
+              if ("error" in simulation) {
+                console.warn(`Simulation Error: ${simulation.error.message}`);
+                throw new Error("Simulation Error");
+              } else {
+                console.log("Simulation Success");
+              }
+              console.log(`Sending bundle`);
+              const sendRawBundlePromise = flashbotProvider.sendRawBundle(
+                bundle,
+                blockNumber + 1
+              );
+              sendRawBundlePromise
+                .then((res) => {
+                  if ("error" in res) {
+                    console.log(`Error sending bundle: ${res.error}`);
+                  } else {
+                    return res.wait().then(async (resolution) => {
+                      switch (resolution) {
+                        case FlashbotsBundleResolution.BundleIncluded:
+                          console.log(`Bundle included`);
+                          break;
+                        case FlashbotsBundleResolution.AccountNonceTooHigh:
+                          console.log(`Account nonce too high`);
+                          break;
+                        case FlashbotsBundleResolution.BlockPassedWithoutInclusion:
+                          console.log(`Block passed without inclusion`);
+                          break;
+                      }
+                    });
+                  }
+                })
+                .catch((err) => {
+                  console.log(`Error sending bundle: ${err}`);
+                });
+              return sendRawBundlePromise.catch((err) => {
+                console.log(`Error sending bundle: ${err}`);
+              });
+            }
+          )
+        );
+      }
+
       console.log(
         `Sending transaction with max fee: ${toFixedGwei(
           maxFeePerGas
@@ -131,7 +245,7 @@ export async function mintOne({
           maxPriorityFeePerGas,
           maxFeePerGas: totalMaxFeePerGas,
         })
-      );
+      ).pipe(mergeMap((txResponse) => from(txResponse.wait())));
     })
   );
 
@@ -142,8 +256,6 @@ export async function mintOne({
     },
   });
 
-  // Make one estimate of a mint call, it shouldn't change much
-  const mintEstimate = await prometheansMinter.estimateGas.mint();
   console.log(`Mint estimate: ${mintEstimate.toString()}`);
   const estimatedBaseFee = await provider.getFeeData();
   const estimatedGasCost = utils.formatEther(
@@ -179,7 +291,7 @@ export async function mintOne({
         console.log(
           `Minted tokenId ${tokenId} with ember ${ember} at block ${blockNumber}`
         );
-        if (ember.eq(BigNumber.from(desiredEmber))) {
+        if (ember.lte(BigNumber.from(desiredEmber))) {
           // This stops everything
           blockNumber$.complete();
           process.exit(0);

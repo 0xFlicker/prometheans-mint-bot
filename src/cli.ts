@@ -30,8 +30,19 @@ mintCommand
     (num: string) => parseInt(num, 10)
   )
   .option("--watch-pending", "watch pending transactions")
+  .option("-t, --flashbot <tip>", "use flashbots and tip", (num) =>
+    utils.parseEther(num)
+  )
   .action(
-    async ({ privateKey, ws, monkRank, fee, maxBaseFee, watchPending }) => {
+    async ({
+      flashbot,
+      privateKey,
+      ws,
+      monkRank,
+      fee,
+      maxBaseFee,
+      watchPending,
+    }) => {
       privateKey = privateKey || process.env.PRIVATE_KEY;
       const ember = rankToEmber(monkRank);
       let allProviders: providers.Provider[];
@@ -42,14 +53,18 @@ mintCommand
         allProviders = [new providers.WebSocketProvider(ws)];
       }
       maxBaseFee = maxBaseFee || utils.parseUnits("30", "gwei");
+      console.log(`Flashbot: ${flashbot}`);
       await mintOne({
         desiredEmber: ember,
         privateKey,
         providers: allProviders,
         contractAddress: "0xc4a5025c4563ad0acc09d92c2506e6744dad58eb",
+        safeMintContractAddress: "0x943d724f8a99c4e3ea233326eca086ce4c5730eb",
         maxPriorityFeePerGas: fee,
         maxBaseFeeAllowed: maxBaseFee,
         watchPending,
+        flashbots: !!flashbot,
+        tip: flashbot ?? undefined,
       });
     }
   );
