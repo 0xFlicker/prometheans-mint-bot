@@ -1,15 +1,26 @@
-import { BigNumber, providers, utils, Signer, Transaction } from "ethers";
+import {
+  BigNumber,
+  providers,
+  utils,
+  Signer,
+  providers as ethersProviders,
+  Wallet,
+} from "ethers";
 import {
   OperatorFunction,
   ObservableInput,
   Subject,
   concatMap,
   exhaustMap,
+  groupBy,
+  mergeMap,
+  first,
   scan,
   share,
   filter,
   partition,
   from,
+  take,
   tap,
   zip,
 } from "rxjs";
@@ -31,27 +42,32 @@ interface IMintState {
 
 export async function mintOne({
   desiredEmber,
-  signer,
-  provider,
+  privateKey,
+  providers,
   contractAddress,
   maxPriorityFeePerGas,
   maxBaseFeeAllowed,
   watchPending,
 }: {
   desiredEmber: number;
-  signer: Signer;
-  provider: providers.WebSocketProvider;
+  privateKey: string;
+  providers: providers.Provider[];
   contractAddress: string;
   maxPriorityFeePerGas: BigNumber;
   maxBaseFeeAllowed: BigNumber;
   watchPending?: boolean;
 }) {
-  console.log(`Minting one with ${desiredEmber} ember`);
+  console.log(`Attempting to mint one with ${desiredEmber} ember`);
+
+  const provider = new ethersProviders.FallbackProvider(providers);
+  const signer = new Wallet(privateKey, provider);
+
   // Connected to wallet, used to send transactions
   const prometheansMinter = Prometheans__factory.connect(
     contractAddress,
     signer
   );
+
   // Connected to provider, used to watch for events
   const prometheansWatcher = Prometheans__factory.connect(
     contractAddress,
@@ -191,32 +207,55 @@ export async function mintOne({
     }
   );
   if (watchPending) {
+    console.log(
+      `Watching pending transactions with ${providers.length} providers.....`
+    );
     const prometheusInterface = prometheansWatcher.interface;
-    provider.on("pending", async (txHash: string) => {
-      try {
-        const tx = await provider.getTransaction(txHash);
-        // Check if the tx is a mint tx that is not ours
-        if (tx?.to === contractAddress && tx?.from !== signerAddress) {
-          // Okay, this is a transaction to the contract, but is it a mint?
-          const txData = prometheusInterface.parseTransaction({
-            data: tx.data,
-          });
-          console.log(JSON.stringify(txData, null, 2));
-          if (txData.name === "mint") {
-            const maxFee = tx.maxFeePerGas || BigNumber.from(0);
-            const maxPriority = tx.maxPriorityFeePerGas || BigNumber.from(0);
-            console.log(
-              `Hostile pending transaction detected! From: ${
-                tx.from
-              }\n - with max fee: ${toFixedGwei(
-                maxFee
-              )} gwei\n - max priority fee: ${toFixedGwei(maxPriority)} gwei`
-            );
-          }
-        }
-      } catch (e) {
-        console.error(e);
-      }
+
+    const pendingTxHashSubject = new Subject<string>();
+    const contractMintTx$ = pendingTxHashSubject.pipe(
+      groupBy((txHash) => txHash),
+      mergeMap((txGroup$) =>
+        txGroup$.pipe(
+          take(1),
+          mergeMap(async (txHash) => {
+            const tx = await provider.getTransaction(txHash);
+            // Check if the tx is a mint tx that is not ours
+            if (tx?.to === contractAddress && tx?.from !== signerAddress) {
+              console.log(`Found pending mint tx: ${txHash}`);
+              // Okay, this is a transaction to the contract, but is it a mint?
+              const txData = prometheusInterface.parseTransaction({
+                data: tx.data,
+              });
+              console.log(JSON.stringify(txData, null, 2));
+              if (txData.name === "mint") {
+                const maxFee = tx.maxFeePerGas || BigNumber.from(0);
+                const maxPriority =
+                  tx.maxPriorityFeePerGas || BigNumber.from(0);
+                console.log(
+                  `Hostile pending transaction detected! From: ${
+                    tx.from
+                  }\n - with max fee: ${toFixedGwei(
+                    maxFee
+                  )} gwei\n - max priority fee: ${toFixedGwei(
+                    maxPriority
+                  )} gwei`
+                );
+              }
+            }
+          })
+        )
+      )
+    );
+    for (const provider of providers) {
+      provider.on("pending", (txHash) => {
+        pendingTxHashSubject.next(txHash);
+      });
+    }
+    contractMintTx$.subscribe({
+      error: (err) => {
+        console.error(err);
+      },
     });
   }
 
@@ -228,14 +267,4 @@ export async function mintOne({
       console.error(err);
     },
   });
-}
-function concatMerge(
-  arg0: ([_, __, feeData]: [any, any, any]) => import("rxjs").Observable<
-    import("ethers").ContractTransaction
-  >
-): import("rxjs").OperatorFunction<
-  [number, BigNumber, providers.FeeData],
-  unknown
-> {
-  throw new Error("Function not implemented.");
 }

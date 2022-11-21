@@ -34,15 +34,18 @@ mintCommand
     async ({ privateKey, ws, monkRank, fee, maxBaseFee, watchPending }) => {
       privateKey = privateKey || process.env.PRIVATE_KEY;
       const ember = rankToEmber(monkRank);
-      const wsProvider = new providers.WebSocketProvider(ws);
-      const signer = new Wallet(privateKey, wsProvider);
-
+      let allProviders: providers.Provider[];
+      if (ws.includes(",")) {
+        const urls: string[] = ws.split(",");
+        allProviders = urls.map((url) => new providers.WebSocketProvider(url));
+      } else {
+        allProviders = [new providers.WebSocketProvider(ws)];
+      }
       maxBaseFee = maxBaseFee || utils.parseUnits("30", "gwei");
-
       await mintOne({
         desiredEmber: ember,
-        provider: wsProvider,
-        signer,
+        privateKey,
+        providers: allProviders,
         contractAddress: "0xc4a5025c4563ad0acc09d92c2506e6744dad58eb",
         maxPriorityFeePerGas: fee,
         maxBaseFeeAllowed: maxBaseFee,
