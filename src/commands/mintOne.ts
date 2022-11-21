@@ -1,8 +1,12 @@
 import { BigNumber, providers, utils, Signer, Transaction } from "ethers";
 import {
+  OperatorFunction,
+  ObservableInput,
   Subject,
   concatMap,
+  exhaustMap,
   scan,
+  share,
   filter,
   partition,
   from,
@@ -43,24 +47,31 @@ export async function mintOne({
   watchPending?: boolean;
 }) {
   console.log(`Minting one with ${desiredEmber} ember`);
+  // Connected to wallet, used to send transactions
   const prometheansMinter = Prometheans__factory.connect(
     contractAddress,
     signer
   );
+  // Connected to provider, used to watch for events
   const prometheansWatcher = Prometheans__factory.connect(
     contractAddress,
     provider
   );
 
+  // The tip of the observable chain. New blocks are pushed into this subject
   const blockNumber$ = new Subject<number>();
 
+  // Get the latest ember for each block
   const currentEmber$ = blockNumber$.pipe(
     concatMap(() => from(prometheansMinter.currentEmber()))
   );
+  // Get the latest gas fee data for each block
   const currentGasPrice$ = blockNumber$.pipe(
     concatMap(() => from(provider.getFeeData()))
   );
-  const currentEmberAndGasPrice$ = zip(
+
+  // Combine the latest ember and gas fee data for each block and filter out blocks that contain an ember we are interested in
+  const currentEmberAndGasPriceWithDesiredEmber$ = zip(
     blockNumber$,
     currentEmber$,
     currentGasPrice$
@@ -73,27 +84,23 @@ export async function mintOne({
         )} gwei`
       );
     }),
-    filter(([_, currentEmber, feeData]) => {
-      return (
-        !!feeData.maxFeePerGas &&
-        currentEmber.eq(BigNumber.from(desiredEmber).add(1)) &&
-        maxBaseFeeAllowed.lte(feeData.maxFeePerGas)
-      );
-    }),
-    scan(
-      (state, [_, currentEmber, feeData]) => {
-        return state.status === "waiting"
-          ? { currentEmber, feeData, status: "minting" as const }
-          : state;
-      },
-      {
-        status: "waiting",
-        currentEmber: BigNumber.from(0),
-        feeData: {} as providers.FeeData,
-      } as IMintState
-    ),
-    filter((state: IMintState) => state.status === "minting"),
-    concatMap(({ currentEmber, feeData }) => {
+    filter(([_, currentEmber]) =>
+      currentEmber.eq(BigNumber.from(desiredEmber).add(1))
+    )
+  );
+
+  // Split the stream into two streams, one of which is for blocks that are above the max base fee allowed
+  const [currentEmberAndGasPriceWellPriced$, tooExpensive$] = partition(
+    currentEmberAndGasPriceWithDesiredEmber$.pipe(share()),
+    ([_, __, feeData]) =>
+      !!feeData.maxFeePerGas && feeData.maxFeePerGas.lte(maxBaseFeeAllowed)
+  );
+
+  // We have a block that contains a desired ember and the gas fee is below the max base fee allowed
+  //  - We will mint one
+  //  - But only if we are not already currently minting
+  const currentEmberAndGasPrice$ = currentEmberAndGasPriceWellPriced$.pipe(
+    exhaustMap(([_, __, feeData]) => {
       let { maxFeePerGas, lastBaseFeePerGas } = feeData;
       maxFeePerGas = maxFeePerGas || lastBaseFeePerGas || ONE_HUNDRED_GWEI;
       const totalMaxFeePerGas = maxFeePerGas.add(maxPriorityFeePerGas);
@@ -111,6 +118,13 @@ export async function mintOne({
       );
     })
   );
+
+  // Too expensive right now to mint
+  tooExpensive$.subscribe({
+    next: ([blockNumber]) => {
+      console.log(`Too expensive to mint at block ${blockNumber}`);
+    },
+  });
 
   // Make one estimate of a mint call, it shouldn't change much
   const mintEstimate = await prometheansMinter.estimateGas.mint();
@@ -165,7 +179,7 @@ export async function mintOne({
         const transactionCost = receipt.gasUsed.mul(receipt.effectiveGasPrice);
 
         console.log(
-          `Hostile mint detected from ${minter}\b - at block ${blockNumber}\n - with ember ${ember}\n - with max priority fee: ${toFixedGwei(
+          `Hostile mint detected from ${minter}\n - at block ${blockNumber}\n - with ember ${ember}\n - with max priority fee: ${toFixedGwei(
             maxPriorityFeePerGas
           )} gwei\n - max fee: ${toFixedGwei(
             maxFeePerGas
@@ -214,4 +228,14 @@ export async function mintOne({
       console.error(err);
     },
   });
+}
+function concatMerge(
+  arg0: ([_, __, feeData]: [any, any, any]) => import("rxjs").Observable<
+    import("ethers").ContractTransaction
+  >
+): import("rxjs").OperatorFunction<
+  [number, BigNumber, providers.FeeData],
+  unknown
+> {
+  throw new Error("Function not implemented.");
 }
