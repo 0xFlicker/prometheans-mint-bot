@@ -53,7 +53,7 @@ mintCommand
         allProviders = [new providers.WebSocketProvider(ws)];
       }
       maxBaseFee = maxBaseFee || utils.parseUnits("30", "gwei");
-      console.log(`Flashbot: ${flashbot}`);
+
       await mintOne({
         desiredEmber: ember,
         privateKey,

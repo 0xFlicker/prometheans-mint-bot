@@ -67,7 +67,9 @@ export async function mintOne({
   tip?: BigNumber;
 }) {
   console.log(`Attempting to mint one with ${desiredEmber} ember`);
-
+  if (!!flashbots) {
+    console.log("Flashbot submission enabled");
+  }
   const provider = new ethersProviders.FallbackProvider(providers);
   const signer = new Wallet(privateKey, provider);
   const authSigner = Wallet.createRandom();
