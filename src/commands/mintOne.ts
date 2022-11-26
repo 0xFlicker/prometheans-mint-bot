@@ -23,6 +23,7 @@ import {
   tap,
   zip,
   of,
+  catchError,
 } from "rxjs";
 import {
   Prometheans__factory,
@@ -247,7 +248,16 @@ export async function mintOne({
           maxPriorityFeePerGas,
           maxFeePerGas: totalMaxFeePerGas,
         })
-      ).pipe(mergeMap((txResponse) => from(txResponse.wait())));
+      ).pipe(
+        mergeMap((txResponse) =>
+          from(
+            txResponse.wait().catch((err) => {
+              console.warn(`Failed to send transaction: ${err.message}`);
+              // nothing
+            })
+          )
+        )
+      );
     })
   );
 
