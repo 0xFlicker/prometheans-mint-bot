@@ -10,6 +10,7 @@ import {
   FlashbotsBundleResolution,
 } from "@flashbots/ethers-provider-bundle";
 import {
+  EMPTY,
   Subject,
   concatMap,
   exhaustMap,
@@ -258,6 +259,10 @@ export async function mintOne({
           )
         )
       );
+    }),
+    catchError((err) => {
+      console.warn(`Error minting: ${err.message}`);
+      return EMPTY;
     })
   );
 
