@@ -42,6 +42,12 @@ yarn cli mint one --ws ws://localhost:8546 --fee 40 --max-base-fee 30 --monk-ran
 
 Mint one monk rank 11 (ember 55) using a local node, a max priority fee of 40 gwei, but don't mint if base fee is over 30
 
+```
+yarn cli mint one --ws ws://localhost:8546 --fee 40 --max-base-fee 30 --monk-rank 9 --monk-level 3
+```
+
+Mint one monk rank 9 level 3 (ember 43) using a local node
+
 ## Example mint one with flashbot
 
 ```

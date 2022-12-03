@@ -32,7 +32,8 @@ mintCommand
   .option(
     "-l, --monk-level <monkLevel>",
     "desired monk level (1-5)",
-    (num: string) => parseInt(num, 10)
+    (num: string) => parseInt(num, 10),
+    1
   )
   .option("--watch-pending", "watch pending transactions")
   .option("-t, --flashbot <tip>", "use flashbots and tip", (num) =>
