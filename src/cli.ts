@@ -29,6 +29,12 @@ mintCommand
     "desired monk rank (1-15) with 1 being the highest",
     (num: string) => parseInt(num, 10)
   )
+  .option(
+    "-l, --monk-level <monkLevel>",
+    "desired monk level (1-5)",
+    (num: string) => parseInt(num, 10),
+    1
+  )
   .option("--watch-pending", "watch pending transactions")
   .option("-t, --flashbot <tip>", "use flashbots and tip", (num) =>
     utils.parseEther(num)
@@ -39,12 +45,13 @@ mintCommand
       privateKey,
       ws,
       monkRank,
+      monkLevel,
       fee,
       maxBaseFee,
       watchPending,
     }) => {
       privateKey = privateKey || process.env.PRIVATE_KEY;
-      const ember = rankToEmber(monkRank);
+      const ember = rankToEmber(monkRank, monkLevel);
       let allProviders: providers.Provider[];
       if (ws.includes(",")) {
         const urls: string[] = ws.split(",");
