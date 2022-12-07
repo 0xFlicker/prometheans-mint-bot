@@ -25,12 +25,13 @@ import {
   zip,
   of,
   catchError,
+  throwError,
 } from "rxjs";
 import {
   Prometheans__factory,
   PrometheansSafeMint__factory,
 } from "../contracts";
-import { toFixedGwei } from "../utils";
+import { rankToEmber, toFixedGwei } from "../utils";
 
 const ONE_HUNDRED_GWEI = utils.parseUnits("100", "gwei");
 
@@ -235,6 +236,12 @@ export async function mintOne({
               });
             }
           )
+        ).pipe(
+          catchError((err) => {
+            // note errors to console, but continue to process messages in the stream
+            console.warn(`Error minting: ${err.message}`);
+            return EMPTY;
+          })
         );
       }
 
@@ -259,10 +266,6 @@ export async function mintOne({
           )
         )
       );
-    }),
-    catchError((err) => {
-      console.warn(`Error minting: ${err.message}`);
-      return EMPTY;
     })
   );
 
@@ -322,16 +325,17 @@ export async function mintOne({
         const maxPriorityFeePerGas =
           tx.maxPriorityFeePerGas || BigNumber.from(0);
         const transactionCost = receipt.gasUsed.mul(receipt.effectiveGasPrice);
-
-        console.log(
-          `Hostile mint detected from ${minter}\n - at block ${blockNumber}\n - with ember ${ember}\n - with max priority fee: ${toFixedGwei(
-            maxPriorityFeePerGas
-          )} gwei\n - max fee: ${toFixedGwei(
-            maxFeePerGas
-          )} gwei\n - transaction cost: ${utils.formatEther(
-            transactionCost
-          )} ether`
-        );
+        if (ember.lte(desiredEmber)) {
+          console.log(
+            `Hostile mint detected from ${minter}\n - at block ${blockNumber}\n - with ember ${ember}\n - with max priority fee: ${toFixedGwei(
+              maxPriorityFeePerGas
+            )} gwei\n - max fee: ${toFixedGwei(
+              maxFeePerGas
+            )} gwei\n - transaction cost: ${utils.formatEther(
+              transactionCost
+            )} ether`
+          );
+        }
       }
     }
   );
@@ -356,7 +360,7 @@ export async function mintOne({
               const txData = prometheusInterface.parseTransaction({
                 data: tx.data,
               });
-              console.log(JSON.stringify(txData, null, 2));
+
               if (txData.name === "mint") {
                 const maxFee = tx.maxFeePerGas || BigNumber.from(0);
                 const maxPriority =
